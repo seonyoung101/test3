@@ -159,6 +159,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 
 /* ============================================================
@@ -567,6 +568,7 @@ const headMattress = add(headGroup, B(0.9, 0.14, 1.1), mattressMat, 0, -0.07, -0
 tag(headMattress, '침상 머리 쪽', () => `침상 머리 각도 ${hobDeg}°`, 'E7');
 
 // 환자
+const patientExistingChildren = new Set(headGroup.children);
 const gownMat = mat(0xcfe8ef);
 const skinMat = mat(0xf3c9a5);
 const torso = add(headGroup, B(0.56, 0.2, 0.85), gownMat, 0, 0.1, -0.475);
@@ -597,6 +599,59 @@ function arm(side) {
   tag(fore, side < 0 ? '환자 오른팔 (Rt. arm)' : '환자 왼팔 (Lt. arm)', side < 0 ? '' : 'IV 라인 유지 중인 팔');
 }
 arm(-1); arm(1);
+// Keep equipment and the pillow when the imported patient replaces the basic figure.
+const patientFallbackMeshes = headGroup.children.filter(o => !patientExistingChildren.has(o) && o !== pillow);
+const patientModelStatus = document.createElement('div');
+patientModelStatus.style.cssText = 'margin-top:8px;padding:8px;border-radius:8px;background:#f4f7f9;font-size:12px';
+patientModelStatus.textContent = '환자 3D 모델 불러오는 중…';
+$('side').appendChild(patientModelStatus);
+const patientModelSettings = {
+  url: new URL('./' + encodeURIComponent('환자.glb'), document.baseURI).href,
+  length: 1.65,
+  // Adjust only if the source model uses a different facing direction.
+  rotation: [0, 0, 0]
+};
+new GLTFLoader().load(patientModelSettings.url, gltf => {
+  try {
+    const model = gltf.scene;
+    const orientation = new THREE.Group();
+    orientation.add(model);
+    orientation.rotation.set(...patientModelSettings.rotation);
+    orientation.updateMatrixWorld(true);
+    let box = new THREE.Box3().setFromObject(orientation);
+    let size = box.getSize(new THREE.Vector3());
+    if (![size.x, size.y, size.z].every(Number.isFinite) || Math.max(size.x, size.y, size.z) <= 0) throw new Error('모델 크기를 확인할 수 없습니다.');
+    // Standard glTF standing characters are Y-up and face +Z.
+    // Lay these on their back, with their head towards the headboard (-Z).
+    const lying = new THREE.Group();
+    lying.add(orientation);
+    if (size.y > size.x && size.y > size.z) lying.rotation.x = -Math.PI / 2;
+    else if (size.x > size.z && size.x > size.y) lying.rotation.y = Math.PI / 2;
+    lying.updateMatrixWorld(true);
+    box = new THREE.Box3().setFromObject(lying);
+    size = box.getSize(new THREE.Vector3());
+    const scale = Math.min(patientModelSettings.length / size.z, 0.78 / size.x, 0.38 / size.y);
+    lying.scale.setScalar(scale);
+    lying.updateMatrixWorld(true);
+    box = new THREE.Box3().setFromObject(lying);
+    const center = box.getCenter(new THREE.Vector3());
+    lying.position.set(-center.x, 0.012 - box.min.y, -1.11 - box.min.z);
+    tag(lying, '환자 (나예민)', () => '나예민 (F/60) · 통증 NRS ' + vit.pain + '/10');
+    model.traverse(o => {
+      if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
+    });
+    headGroup.add(lying);
+    patientFallbackMeshes.forEach(o => { o.visible = false; o.raycast = () => {}; });
+    patientModelStatus.textContent = '환자.glb 모델 적용 완료';
+    window.__patientModel = { model, lying, settings: patientModelSettings };
+  } catch (error) {
+    console.error('환자 모델 적용 실패:', error);
+    patientModelStatus.textContent = '환자 모델을 적용하지 못했습니다. 기존 환자를 표시합니다.';
+  }
+}, undefined, error => {
+  console.error('환자.glb 불러오기 실패:', error);
+  patientModelStatus.textContent = '환자.glb를 불러오지 못했습니다. index.html과 같은 폴더에 파일이 있는지 확인해 주세요. 기존 환자를 표시합니다.';
+});
 
 // E1 손목밴드 (Rt. wrist)
 const bandTex = canvasTex(256, 128, (g, w, h) => {
